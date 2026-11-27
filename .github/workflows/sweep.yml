@@ -1,0 +1,55 @@
+name: sweep
+
+on:
+  push:
+    branches: [main]
+    paths: ["configs/**", ".github/workflows/sweep.yml"]
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        conf: [c00, c01, c02, c03, c04, c05, c06, c07, c08, c09, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          docker system prune -af || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Minos
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y jq zstd
+          git clone --depth 1 https://github.com/minos-protocol/minos_subnet.git
+          cd minos_subnet
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip -q
+          .venv/bin/pip install -r requirements.txt -q
+      - name: Prepare runtime (official demo)
+        continue-on-error: true
+        working-directory: minos_subnet
+        run: bash start-miner.sh --demo < /dev/null > ../demo.log 2>&1
+      - name: Score training rounds
+        working-directory: minos_subnet
+        run: |
+          cp ../rank_past_rounds.py .
+          source .venv/bin/activate
+          python rank_past_rounds.py --rounds 3 --skip 0 --conf ../configs/${{ matrix.conf }}.conf 2>&1 | tee ../rank.log
+          python - <<'PY'
+          import csv
+          rows=[r for r in csv.DictReader(open('past_rounds/results.csv')) if r['my_score']]
+          if rows:
+              gap=sum(float(r['rank20'])-float(r['my_score']) for r in rows)/len(rows)
+              sc=sum(float(r['my_score']) for r in rows)/len(rows)
+              rk=sum(int(r['est_rank']) for r in rows)/len(rows)
+              w=sum(float(r['est_weight']) for r in rows)/len(rows)
+              print(f"SUMMARY ${{ matrix.conf }} n={len(rows)} score={sc:.6f} gap_to_rank20={gap:.6f} rank={rk:.1f} weight={w:.4f}")
+          else:
+              print("SUMMARY ${{ matrix.conf }} n=0")
+          PY
