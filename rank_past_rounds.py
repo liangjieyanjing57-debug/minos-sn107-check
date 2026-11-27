@@ -114,6 +114,7 @@ def main():
     if not (base / "neurons" / "miner.py").exists():
         sys.exit("minos_subnet のフォルダで実行してください")
     sys.path.insert(0, str(base))
+    sys.argv = [sys.argv[0]]  # bittensor側の引数解析に --conf を渡さない（--config と誤認されるため）
     from neurons import miner  # 公式の採点処理をそのまま使う
     from utils import scoring_version
 
