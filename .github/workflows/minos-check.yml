@@ -1,0 +1,63 @@
+name: minos-check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: "過去ラウンドの数"
+        default: "3"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          docker system prune -af || true
+          df -h /
+          nproc; free -g
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools and Minos
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y jq zstd
+          git clone --depth 1 https://github.com/minos-protocol/minos_subnet.git
+          cd minos_subnet
+          git rev-parse HEAD
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip -q
+          .venv/bin/pip install -r requirements.txt -q
+
+      - name: Official demo (sanity check)
+        continue-on-error: true
+        working-directory: minos_subnet
+        run: |
+          set -o pipefail
+          yes "" | bash start-miner.sh --demo 2>&1 | tee ../demo.log
+
+      - name: Score past live rounds (default GATK config)
+        working-directory: minos_subnet
+        run: |
+          set -o pipefail
+          cp ../rank_past_rounds.py .
+          source .venv/bin/activate
+          python rank_past_rounds.py --rounds "${{ github.event.inputs.rounds || '3' }}" 2>&1 | tee ../rank.log
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minos-results
+          path: |
+            demo.log
+            rank.log
+            minos_subnet/past_rounds/results.csv
