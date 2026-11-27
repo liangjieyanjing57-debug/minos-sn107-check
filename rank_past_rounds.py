@@ -55,10 +55,17 @@ def dust_weights(cfg):
     return [top] + [rest * t / s for t in terms]
 
 
+def score_of(e):
+    for k in ("current_score", "combined_final"):
+        v = e.get(k)
+        if isinstance(v, (int, float)) and v > 0:
+            return float(v)
+    return None
+
+
 def estimate_rank(my_score, entries):
     """同点は自分を最後尾に置く（提出が一番遅かった場合）。"""
-    others = [e["current_score"] for e in entries
-              if isinstance(e.get("current_score"), (int, float)) and e["current_score"] > 0]
+    others = [s for s in (score_of(e) for e in entries) if s is not None]
     better_or_equal = sum(1 for s in others if s >= my_score - 1e-12)
     return better_or_equal + 1, sorted(others, reverse=True)
 
@@ -79,6 +86,10 @@ def revealed_round_ids(limit, skip=0):
             print(f"  {rid}: 取得できず ({e})")
             continue
         if not lb.get("round", {}).get("is_finalized"):
+            continue
+        valid = sum(1 for e in lb.get("entries", []) if score_of(e) is not None)
+        if valid < 20:
+            print(f"  {rid}: 有効な点数が{valid}件しかないラウンドなので除外")
             continue
         if not v.get("reveal"):
             print(f"  {rid}: 課題ファイル未公開")
