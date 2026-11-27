@@ -7,7 +7,7 @@ on:
     inputs:
       rounds:
         description: "過去ラウンドの数"
-        default: "3"
+        default: "10"
 
 jobs:
   check:
@@ -42,7 +42,7 @@ jobs:
         working-directory: minos_subnet
         run: |
           set -o pipefail
-          yes "" | bash start-miner.sh --demo 2>&1 | tee ../demo.log
+          bash start-miner.sh --demo < /dev/null 2>&1 | tee ../demo.log
 
       - name: Score past live rounds (default GATK config)
         working-directory: minos_subnet
@@ -50,7 +50,7 @@ jobs:
           set -o pipefail
           cp ../rank_past_rounds.py .
           source .venv/bin/activate
-          python rank_past_rounds.py --rounds "${{ github.event.inputs.rounds || '3' }}" 2>&1 | tee ../rank.log
+          python rank_past_rounds.py --rounds "${{ github.event.inputs.rounds || '10' }}" 2>&1 | tee ../rank.log
 
       - name: Upload results
         if: always()

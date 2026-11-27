@@ -63,21 +63,31 @@ def estimate_rank(my_score, entries):
     return better_or_equal + 1, sorted(others, reverse=True)
 
 
-def revealed_round_ids(limit):
-    tw = get_json("/verification/task-window")
-    ids = [e["drawn"]["round_id"] for e in tw.get("entries", []) if e.get("status") == "drawn"]
+def revealed_round_ids(limit, skip=0):
+    """確定済みの最新ラウンドから72分ずつさかのぼり、課題ファイルが公開済みのものを集める。"""
+    from datetime import datetime, timedelta
+    latest = get_json("/scoring/rounds/latest-finalized/leaderboard")["round"]["round_id"]
+    t0 = datetime.fromisoformat(latest)
     out = []
-    for rid in reversed(ids):
-        v = get_json("/verification/round/" + urllib.parse.quote(rid, safe=""))
-        if v.get("reveal"):
-            try:
-                lb = get_json("/scoring/rounds/" + urllib.parse.quote(rid, safe="") + "/leaderboard")
-            except Exception:
-                continue
-            if lb.get("round", {}).get("is_finalized"):
-                out.append((rid, lb))
+    for i in range(skip, skip + limit * 4):
+        rid = (t0 - timedelta(minutes=72 * i)).isoformat()
+        q = urllib.parse.quote(rid, safe="")
+        try:
+            lb = get_json("/scoring/rounds/" + q + "/leaderboard")
+            v = get_json("/verification/round/" + q)
+        except Exception as e:
+            print(f"  {rid}: 取得できず ({e})")
+            continue
+        if not lb.get("round", {}).get("is_finalized"):
+            continue
+        if not v.get("reveal"):
+            print(f"  {rid}: 課題ファイル未公開")
+            continue
+        lb["_reveal_files"] = v["reveal"].get("files", [])
+        out.append((rid, lb))
         if len(out) >= limit:
             break
+    print(f"対象ラウンド: {[r for r, _ in out]}")
     return out
 
 
@@ -86,6 +96,7 @@ def main():
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--conf", default="configs/gatk.conf")
     ap.add_argument("--workdir", default="past_rounds")
+    ap.add_argument("--skip", type=int, default=0, help="新しい方から何ラウンド飛ばすか")
     args = ap.parse_args()
 
     base = Path.cwd()
@@ -104,21 +115,33 @@ def main():
     tool_config = miner._load_config_for_scoring(args.conf, "gatk")
     work = base / args.workdir
     results = []
-    for rid, lb in revealed_round_ids(args.rounds):
+    for rid, lb in revealed_round_ids(args.rounds, args.skip):
         region = lb["round"]["region"]
         chrom = region.split(":")[0]
         tag = rid.replace(":", "").replace("+0000", "")
         rdir = work / tag
         print(f"\n=== ラウンド {rid}  領域 {region} ===")
-        subprocess.run(["bash", "check_round.sh", rid, "--download", str(rdir)], check=True)
-        ref, sdf = ensure_reference(chrom, base)
-        score = miner._run_and_score(
-            tool="gatk", tool_config=tool_config,
-            bam_path=(rdir / "input.bam").resolve(), ref_path=ref.resolve(),
-            truth_path=(rdir / "truth.vcf.gz").resolve(),
-            mutations_path=(rdir / "mutations.vcf.gz").resolve(),
-            region=region, reference_sdf=str(sdf.resolve()), scoring_version=version,
-        )
+        allowed = {"input.bam", "input.bam.bai", "truth.vcf.gz", "truth.vcf.gz.tbi",
+                   "mutations.vcf.gz", "mutations.vcf.gz.tbi"}
+        for f in lb["_reveal_files"]:
+            if f.get("name") in allowed and str(f.get("url", "")).startswith("https://"):
+                fetch(f["url"], rdir / f["name"])
+        if not (rdir / "input.bam").exists():
+            print("  課題ファイルを取得できませんでした")
+            results.append([rid, region, "", "", "", "", ""])
+            continue
+        try:
+            ref, sdf = ensure_reference(chrom, base)
+            score = miner._run_and_score(
+                tool="gatk", tool_config=tool_config,
+                bam_path=(rdir / "input.bam").resolve(), ref_path=ref.resolve(),
+                truth_path=(rdir / "truth.vcf.gz").resolve(),
+                mutations_path=(rdir / "mutations.vcf.gz").resolve(),
+                region=region, reference_sdf=str(sdf.resolve()), scoring_version=version,
+            )
+        except Exception as e:  # 1ラウンドの失敗で全体を止めない
+            print(f"  エラー: {e}")
+            score = None
         if score is None:
             print("  採点できませんでした（上のエラーを確認）")
             results.append([rid, region, "", "", "", "", ""])
